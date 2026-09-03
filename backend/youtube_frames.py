@@ -29,27 +29,13 @@ except ImportError:  # direct execution
 
 URL_SCHEME = "ytframe://"
 
-# Title prefix -> metadata for the CWA coastal network.
-#
-# Coordinates are sourced, not guessed - `loc_src` records which:
-#   "CWA ...潮位站"  the agency's own tide-station position (best available,
-#                    published by CWA; the camera sits at that station)
-#   "OSM ..."        the harbour/beach feature from OpenStreetMap, for sites
-#                    with no CWA station. Good to roughly the size of the
-#                    harbour, not the exact mast.
-# CWA does not publish camera mast positions, so nothing here is better than
-# site-level. Surfaced to the UI so the accuracy is visible rather than implied.
-CWA_CAMERAS = {
-    "基隆和平島": dict(slug="keelung-heping", en="Keelung Heping Island", coast="north", lat=25.1603, lon=121.7695, water="East China Sea", loc_src="OSM 和平島公園"),
-    "碧砂": dict(slug="keelung-bisha", en="Keelung Bisha Fishing Port", coast="north", lat=25.14673, lon=121.78643, water="harbour", loc_src="OSM 碧砂漁港"),
-    "龍洞": dict(slug="longdong", en="New Taipei Longdong", coast="northeast", lat=25.0975, lon=121.9181, water="Pacific", loc_src="CWA 龍洞潮位站"),
-    "新北福隆": dict(slug="fulong", en="New Taipei Fulong", coast="northeast", lat=25.0217, lon=121.9503, water="Pacific", loc_src="CWA 福隆潮位站"),
-    "宜蘭外澳": dict(slug="yilan-waiao", en="Yilan Wai'ao", coast="east", lat=24.87785, lon=121.84298, water="Pacific", loc_src="OSM 外澳海灘"),
-    "宜蘭蘇澳": dict(slug="yilan-suao", en="Yilan Suao Port", coast="east", lat=24.59247, lon=121.86577, water="harbour", loc_src="CWA 蘇澳潮位站"),
-    "臺東富岡漁港": dict(slug="taitung-fugang", en="Taitung Fugang Fishing Port", coast="east", lat=22.79084, lon=121.19049, water="harbour", loc_src="OSM 富岡漁港"),
-    "臺南安平港": dict(slug="tainan-anping", en="Tainan Anping Port", coast="west", lat=22.99243, lon=120.15437, water="harbour", loc_src="OSM 安平漁港"),
-    "新竹": dict(slug="hsinchu-cga", en="Hsinchu Coast Guard (12th Sea Patrol)", coast="west", lat=24.8486, lon=120.9206, water="Taiwan Strait", loc_src="CWA 新竹潮位站"),
-}
+try:
+    from .coastal_cameras import COASTAL_CAMERAS
+except ImportError:  # direct execution
+    from coastal_cameras import COASTAL_CAMERAS
+
+# Kept as the historical name so existing imports keep working.
+CWA_CAMERAS = COASTAL_CAMERAS
 
 CWA_CHANNEL = "https://www.youtube.com/@cwa-tw/streams"
 
@@ -70,7 +56,7 @@ class YouTubeFrameGrabber:
     def __init__(self, channel: str = CWA_CHANNEL, cameras: Optional[Dict] = None,
                  frame_interval: float = 20.0, id_refresh_interval: float = 3600.0,
                  media_url_ttl: float = 3600.0, grab_timeout: float = 30.0,
-                 stream_latency: float = 0.0, logger=None):
+                 stream_latency: float = 0.0, max_concurrent: int = 6, logger=None):
         self.channel = channel
         self.cameras = cameras if cameras is not None else CWA_CAMERAS
         self.frame_interval = frame_interval
@@ -82,6 +68,9 @@ class YouTubeFrameGrabber:
         # detections carry the observation time, not the download time. Verify
         # against the timestamp CWA burns into the image before trusting it.
         self.stream_latency = stream_latency
+        # Each grab spawns yt-dlp and ffmpeg. With ~100 cameras, firing them all
+        # at once would swamp the host, so grabs run in bounded batches.
+        self.max_concurrent = max(1, max_concurrent)
         self.logger = logger
 
         # camera_id -> {"videoId", "title", "meta"}
@@ -102,32 +91,51 @@ class YouTubeFrameGrabber:
             pass
 
     # -- id resolution -----------------------------------------------------
-    def _match(self, title: str):
-        for key in sorted(self.cameras, key=len, reverse=True):
-            if title.startswith(key):
-                return key, self.cameras[key]
-        return None, None
+    def _channels(self):
+        """Distinct channel URLs across the camera table."""
+        seen = []
+        for meta in self.cameras.values():
+            ch = meta.get("channel", self.channel)
+            if ch not in seen:
+                seen.append(ch)
+        return seen
 
     def refresh_ids(self) -> int:
-        """Re-resolve which streams are live now. Returns camera count."""
-        try:
-            proc = _run(["yt-dlp", "--no-warnings", "--flat-playlist",
-                         "--print", "%(id)s|%(title)s", self.channel], timeout=180)
-        except Exception as exc:
-            self._log("warning", "youtube id refresh failed", error=str(exc))
-            return len(self.resolved)
+        """Re-resolve which streams are live now, across every channel.
 
+        Each operator restarts its streams on its own schedule, so ids are
+        matched by title against the camera table rather than stored.
+        """
         found = {}
-        for line in proc.stdout.strip().splitlines():
-            if "|" not in line:
+        reachable = 0
+        for channel in self._channels():
+            try:
+                proc = _run(["yt-dlp", "--no-warnings", "--flat-playlist",
+                             "--match-filter", "is_live",
+                             "--print", "%(id)s|%(title)s", channel], timeout=180)
+            except Exception as exc:
+                self._log("warning", "channel enumeration failed",
+                          channel=channel, error=str(exc))
                 continue
-            vid, _, title = line.partition("|")
-            key, meta = self._match(title.strip())
-            if not meta:
-                continue
-            found[meta["slug"]] = {"videoId": vid.strip(), "title": title.strip(), "meta": meta}
+            lines = [l for l in proc.stdout.strip().splitlines() if "|" in l]
+            if lines:
+                reachable += 1
+            for line in lines:
+                vid, _, title = line.partition("|")
+                title = title.strip()
+                for slug, meta in self.cameras.items():
+                    if meta.get("channel", self.channel) != channel:
+                        continue
+                    if slug in found:
+                        continue
+                    needles = meta["match"]
+                    if isinstance(needles, str):
+                        needles = [needles]
+                    if any(n in title for n in needles):
+                        found[slug] = {"videoId": vid.strip(), "title": title, "meta": meta}
+                        break
 
-        if not found:
+        if not found or reachable == 0:
             # Keep the previous set rather than blanking the feed list on a blip.
             self._log("warning", "youtube id refresh returned nothing; keeping previous")
             return len(self.resolved)
@@ -235,6 +243,8 @@ class YouTubeFrameGrabber:
                 "description": f"{meta['en']} - {meta['water']}",
                 "roadName": meta["en"],
                 "locationMile": f"{meta['water']} ({meta['coast']} coast)",
+                "operator": meta.get("operator", ""),
+                "county": meta.get("county", ""),
                 "lat": str(meta["lat"]),
                 "lon": str(meta["lon"]),
                 "direction": meta["coast"],
@@ -259,16 +269,23 @@ class YouTubeFrameGrabber:
                     await loop.run_in_executor(None, self.refresh_ids)
 
                 cams = list(self.resolved)
-                results = await asyncio.gather(
-                    *(loop.run_in_executor(None, self.grab, c) for c in cams),
-                    return_exceptions=True,
-                )
-                ok = sum(1 for r in results if r is True)
-                self._log("info", "coastal frames grabbed", ok=ok, total=len(cams))
-                for cam, r in zip(cams, results):
-                    if r is not True:
-                        self._log("debug", "frame grab failed", camera=cam,
-                                  error=str(r) if isinstance(r, Exception) else None)
+                ok = 0
+                failed = []
+                for i in range(0, len(cams), self.max_concurrent):
+                    batch = cams[i:i + self.max_concurrent]
+                    results = await asyncio.gather(
+                        *(loop.run_in_executor(None, self.grab, c) for c in batch),
+                        return_exceptions=True,
+                    )
+                    for cam, r in zip(batch, results):
+                        if r is True:
+                            ok += 1
+                        else:
+                            failed.append(cam)
+                self._log("info", "coastal frames grabbed",
+                          ok=ok, total=len(cams), failed=len(failed))
+                if failed:
+                    self._log("debug", "frame grabs failed", cameras=failed[:10])
 
                 await asyncio.sleep(self.frame_interval)
             except asyncio.CancelledError:

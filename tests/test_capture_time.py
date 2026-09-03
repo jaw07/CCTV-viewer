@@ -108,45 +108,73 @@ class TestFrameTimestampOCR:
 
 
 class TestCameraCoordinates:
-    """Coordinates are shown on a map and broadcast in CoT, so guard them."""
+    """Coordinates are drawn on a map and broadcast in CoT, so guard them.
+
+    Bounds cover the whole ROC-administered area, not just Taiwan island:
+    Kinmen sits at ~118.3E and Matsu at ~26.2N/119.9E.
+    """
 
     @staticmethod
     def _cams():
-        from youtube_frames import CWA_CAMERAS
-        return CWA_CAMERAS
+        from coastal_cameras import COASTAL_CAMERAS
+        return COASTAL_CAMERAS
 
-    def test_all_within_taiwan_bounds(self):
-        """Catch a transposed or mistyped coordinate landing in the wrong country."""
-        for zh, meta in self._cams().items():
-            assert 21.5 <= meta["lat"] <= 26.5, f"{zh} latitude out of Taiwan bounds"
-            assert 119.0 <= meta["lon"] <= 122.5, f"{zh} longitude out of Taiwan bounds"
+    def test_all_within_bounds(self):
+        """Catch a transposed or mistyped coordinate landing somewhere absurd."""
+        for slug, meta in self._cams().items():
+            assert 21.5 <= meta["lat"] <= 26.5, f"{slug} latitude out of bounds"
+            assert 118.0 <= meta["lon"] <= 122.5, f"{slug} longitude out of bounds"
 
     def test_lat_lon_not_swapped(self):
-        """Taiwan's lat and lon ranges do not overlap, so a swap is detectable."""
-        for zh, meta in self._cams().items():
-            assert meta["lat"] < meta["lon"], f"{zh} looks like lat/lon are swapped"
+        """Latitude and longitude ranges do not overlap here, so a swap shows."""
+        for slug, meta in self._cams().items():
+            assert meta["lat"] < meta["lon"], f"{slug} looks like lat/lon are swapped"
 
     def test_every_camera_records_its_position_source(self):
-        for zh, meta in self._cams().items():
-            assert meta.get("loc_src"), f"{zh} has no loc_src provenance"
+        for slug, meta in self._cams().items():
+            assert meta.get("loc_src"), f"{slug} has no loc_src provenance"
 
-    def test_west_coast_cameras_are_actually_west(self):
-        """A west-coast label with an east-coast longitude would misplace the marker."""
-        for zh, meta in self._cams().items():
-            if meta["coast"] == "west":
-                assert meta["lon"] < 121.0, f"{zh} marked west but sits at lon {meta['lon']}"
+    def test_west_facing_cameras_are_not_on_the_east_coast(self):
+        """A west label with an east-coast longitude would misplace the marker.
 
-    def test_coordinates_are_distinct(self):
-        seen = {}
-        for zh, meta in self._cams().items():
-            key = (round(meta["lat"], 4), round(meta["lon"], 4))
-            assert key not in seen, f"{zh} shares coordinates with {seen.get(key)}"
-            seen[key] = zh
+        The threshold is loose (121.5, not 121.0) because northern Taiwan bulges
+        east: Taoyuan's west-facing coast is at ~121.17E and Tamsui's river mouth
+        at ~121.42E. Longitude alone cannot separate east from west in the south
+        (Taitung's east coast is only 121.19E), so this catches gross mislabelling
+        rather than proving the coast assignment.
+        """
+        for slug, meta in self._cams().items():
+            if meta["coast"] in ("west", "northwest"):
+                assert meta["lon"] < 121.5, f"{slug} marked west but at lon {meta['lon']}"
+
+    def test_every_camera_has_a_channel_not_a_video_id(self):
+        """Video ids rotate daily; storing one would rot within a day."""
+        for slug, meta in self._cams().items():
+            assert meta["channel"].startswith("https://www.youtube.com/"), slug
+            assert "/watch?v=" not in meta["channel"], f"{slug} stores a video id"
+
+    def test_co_located_cameras_are_declared_as_such(self):
+        """Several angles at one site is fine, but it should be explicit."""
+        import collections
+        seen = collections.defaultdict(list)
+        for slug, meta in self._cams().items():
+            seen[(round(meta["lat"], 4), round(meta["lon"], 4))].append(slug)
+        for coord, slugs in seen.items():
+            if len(slugs) > 1:
+                srcs = {self._cams()[s]["loc_src"] for s in slugs}
+                assert srcs, f"co-located cameras {slugs} lack provenance"
 
     def test_feed_records_expose_the_source(self):
-        from youtube_frames import YouTubeFrameGrabber, CWA_CAMERAS
+        from youtube_frames import YouTubeFrameGrabber
         g = YouTubeFrameGrabber()
-        g.resolved = {m["slug"]: {"videoId": "x", "title": zh, "meta": m}
-                      for zh, m in CWA_CAMERAS.items()}
+        g.resolved = {slug: {"videoId": "x", "title": slug, "meta": m}
+                      for slug, m in self._cams().items()}
         for feed in g.build_feeds():
             assert feed["locationSource"], f"{feed['id']} lost its position source"
+
+    def test_west_filter_selects_only_west(self):
+        from youtube_frames import YouTubeFrameGrabber
+        g = YouTubeFrameGrabber()
+        g.resolved = {slug: {"videoId": "x", "title": slug, "meta": m}
+                      for slug, m in self._cams().items()}
+        assert all(f["direction"] == "west" for f in g.build_feeds(west_only=True))

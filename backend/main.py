@@ -978,6 +978,7 @@ async def initialize_feeds():
                 frame_interval=_YT_CFG.get('frame_interval', 20),
                 id_refresh_interval=_YT_CFG.get('id_refresh_interval', 3600),
                 stream_latency=_YT_CFG.get('stream_latency_seconds', 0),
+                max_concurrent=_YT_CFG.get('max_concurrent_grabs', 6),
                 logger=logger,
             )
             loop = asyncio.get_event_loop()
