@@ -578,7 +578,13 @@ async def fetch_feed_list():
             # Update app_state instead of global variable
             if yt_grabber is not None:
                 coastal = yt_grabber.build_feeds(west_only=YT_WEST_ONLY)
-                feeds = feeds + coastal
+                # Coastal cameras go FIRST: there are only ~120 of them, their
+                # frames are already in memory, and they are the feeds people
+                # come here for. Ordering has to happen here rather than at
+                # startup, because this runs again whenever the list refreshes -
+                # appending them left them last in a 2400-feed cycle, so they
+                # took many minutes to show any status.
+                feeds = coastal + feeds
                 if coastal:
                     logger.info("Added coastal camera feeds", count=len(coastal))
 
@@ -1022,6 +1028,7 @@ async def initialize_feeds():
         rest = [f for f in feeds_data if not f.get('id', '').startswith('CWA-')]
         priority_feeds = [f for f in rest if '國道' in f.get('roadName', '')]
         other_feeds = [f for f in rest if '國道' not in f.get('roadName', '')]
+        # Same ordering as fetch_feed_list applies: coastal, then major highways.
         app_state.feeds_data = coastal + priority_feeds + other_feeds
         logger.info("Feed prioritization complete", coastal=len(coastal),
                     priority=len(priority_feeds), other=len(other_feeds))
