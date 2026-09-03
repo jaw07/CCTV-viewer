@@ -68,6 +68,12 @@
             margin-bottom: var(--spacing-xs);
         }
 
+        .modal-header-actions {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
+        }
+
         /* Search results count */
         .search-results {
             font-size: 12px;
@@ -189,7 +195,16 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h2 id="modalTitle"></h2>
-                <button class="modal-close" id="modalClose" aria-label="Close modal">&times;</button>
+                <div class="modal-header-actions">
+                    <button type="button" class="btn" id="showOnMapBtn" title="Show this camera on the map">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+                            <circle cx="12" cy="10" r="3"/>
+                        </svg>
+                        Show on map
+                    </button>
+                    <button class="modal-close" id="modalClose" aria-label="Close modal">&times;</button>
+                </div>
             </div>
             <div class="modal-video" id="modalVideo"></div>
             <div class="modal-details" id="modalDetails"></div>
@@ -352,6 +367,16 @@
             };
         })();
         const API_URL = API_ORIGIN;
+
+        // Jump from the open feed to its dot on the map.
+        (function () {
+            const showOnMapBtn = document.getElementById('showOnMapBtn');
+            if (!showOnMapBtn) return;
+            showOnMapBtn.addEventListener('click', () => {
+                if (!currentModalFeedId) return;
+                window.location.href = `map.html?feed=${encodeURIComponent(currentModalFeedId)}`;
+            });
+        })();
 
         // Sign-out control: hidden entirely when the deployment runs without auth.
         (function () {

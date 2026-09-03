@@ -502,6 +502,7 @@
                 allFeeds = data.features;
                 displayFeeds(allFeeds);
                 updateStats();
+                focusFeedFromUrl();
             } catch (error) {
                 console.error('Error loading feeds:', error);
                 Toast.error('Failed to load feed data');
@@ -613,11 +614,36 @@
             window.open(`feed.html?id=${feedId}`, '_blank');
         }
 
-        // Center map on feed
-        function centerOnFeed(feedId) {
+        // Center map on feed. Markers live in a cluster group, so a plain
+        // setView can leave the target hidden inside a cluster bubble;
+        // zoomToShowLayer expands the cluster first, then we open the popup.
+        function centerOnFeed(feedId, { openPopup = true } = {}) {
             const feedMarker = feedMarkers[feedId];
-            if (feedMarker) {
+            if (!feedMarker) return false;
+
+            const reveal = () => {
+                if (openPopup) feedMarker.marker.openPopup();
+            };
+
+            if (typeof markers.zoomToShowLayer === 'function') {
+                markers.zoomToShowLayer(feedMarker.marker, reveal);
+            } else {
                 map.setView([feedMarker.coordinates[1], feedMarker.coordinates[0]], 15);
+                reveal();
+            }
+            return true;
+        }
+
+        // Honour ?feed=<id> so other pages can deep-link straight to one camera.
+        function focusFeedFromUrl() {
+            const wanted = new URLSearchParams(window.location.search).get('feed');
+            if (!wanted) return;
+
+            if (centerOnFeed(wanted)) {
+                // Drop the param so a later refresh does not re-zoom unexpectedly.
+                window.history.replaceState({}, '', window.location.pathname);
+            } else {
+                Toast.error(`Camera ${wanted} is not on the map`);
             }
         }
 
