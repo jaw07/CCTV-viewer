@@ -21,6 +21,13 @@ detection:
   coastal:
     confidence_threshold: 0.35
     imgsz: 1280
+    # Coastal only. On the reference harbour frame at imgsz=1280/conf=0.35:
+    #   yolov8m  2 boats   50ms
+    #   yolov8l  3 boats   69ms
+    #   yolov8x  4 boats  152ms
+    # Road cameras keep the main model - yolov8x costs 1.5x there for no gain,
+    # since vehicle detection already works. Leave unset to reuse the main model.
+    model: yolov8x.pt
   min_box_size: 20  # Minimum bounding box size in pixels
   vehicle_classes:  # COCO dataset class IDs
     - 2  # car

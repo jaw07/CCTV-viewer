@@ -93,6 +93,8 @@ class AppState:
 
         # Core components - set during startup
         self.yolo_model = None
+        # Optional heavier model used only for coastal cameras.
+        self.coastal_model = None
         self.db_manager: Optional[DatabaseManager] = None
         self.tracker_manager: Optional[TrackerManager] = None
         self.ws_manager: Optional[ConnectionManager] = None

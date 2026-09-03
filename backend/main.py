@@ -159,6 +159,10 @@ VEHICLE_CLASSES = CONFIG.get('detection', {}).get('vehicle_classes', [2, 5, 7])
 _COASTAL_CFG = CONFIG.get('detection', {}).get('coastal', {})
 COASTAL_CONFIDENCE = _COASTAL_CFG.get('confidence_threshold', 0.35)
 COASTAL_IMGSZ = _COASTAL_CFG.get('imgsz', 1280)
+# Coastal cameras may use a heavier model than the road cameras. yolov8x finds
+# roughly twice the vessels of yolov8m (4 vs 2 on the reference harbour frame),
+# but costs 1.5x at road settings for no benefit there, so the two are split.
+COASTAL_MODEL = _COASTAL_CFG.get('model')
 ROAD_IMGSZ = CONFIG.get('detection', {}).get('imgsz', 640)
 # Coastal/harbour cameras see vessels, not cars. COCO class 8 is 'boat'.
 if CONFIG.get('detection', {}).get('detect_boats', False) and 8 not in VEHICLE_CLASSES:
@@ -631,7 +635,10 @@ def detect_vehicles(img_bytes: bytes, feed_id: str = None) -> tuple[bool, bytes,
         is_coastal = bool(feed_id and feed_id.startswith('CWA-'))
         conf = COASTAL_CONFIDENCE if is_coastal else CONFIDENCE_THRESHOLD
         imgsz = COASTAL_IMGSZ if is_coastal else ROAD_IMGSZ
-        results = app_state.yolo_model(img_array, verbose=False, conf=conf, imgsz=imgsz)[0]
+        model = app_state.yolo_model
+        if is_coastal and getattr(app_state, 'coastal_model', None) is not None:
+            model = app_state.coastal_model
+        results = model(img_array, verbose=False, conf=conf, imgsz=imgsz)[0]
 
         has_vehicles = False
         valid_boxes = []
@@ -1159,6 +1166,18 @@ async def lifespan(app: FastAPI):
             logger.info("YOLO model loaded on CPU")
 
         app_state.yolo_model = yolo_model
+
+        # Optional second model just for coastal cameras.
+        if COASTAL_MODEL and COASTAL_MODEL != model_name:
+            try:
+                coastal_model = YOLO(COASTAL_MODEL)
+                if device in ('cuda', 'mps'):
+                    coastal_model.to(device)
+                app_state.coastal_model = coastal_model
+                logger.info("Coastal model loaded", model=COASTAL_MODEL, device=device)
+            except Exception as exc:
+                logger.error("Coastal model failed to load; falling back to the main model",
+                             model=COASTAL_MODEL, error=str(exc))
 
         # Set system info metrics
         metrics.system_info.info({

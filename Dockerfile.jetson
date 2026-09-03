@@ -39,7 +39,7 @@ RUN grep -ivE '^(torch|torchvision|numpy)' requirements.txt > requirements-jetso
     pip install --no-cache-dir -r requirements-jetson.txt
 
 # Pre-fetch the weights so the first request does not block on a download.
-RUN python3 -c "from ultralytics import YOLO; YOLO('yolov8m.pt'); YOLO('yolov8n.pt')" || true
+RUN python3 -c "from ultralytics import YOLO; [YOLO(m) for m in ('yolov8n.pt','yolov8m.pt','yolov8x.pt')]" || true
 
 COPY . .
 
