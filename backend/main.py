@@ -981,20 +981,36 @@ async def initialize_feeds():
                 max_concurrent=_YT_CFG.get('max_concurrent_grabs', 6),
                 logger=logger,
             )
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, yt_grabber.refresh_ids)
-            # Prime one frame per camera BEFORE the first cache cycle. Without
-            # this the cycle reaches the coastal feeds a second before the first
-            # frames land, marks them offline, and they stay that way until the
-            # next full pass over ~2300 feeds.
-            await asyncio.gather(*(
-                loop.run_in_executor(None, yt_grabber.grab, cam)
-                for cam in list(yt_grabber.resolved)
-            ), return_exceptions=True)
-            asyncio.create_task(yt_grabber.run())
+            pass  # resolution happens in the background, below
 
-    # Fetch initial feed list
+    # Fetch the road feed list FIRST and get the app serving. NOTHING involving
+    # YouTube may block startup: resolving ids across ~37 channels and priming
+    # ~120 frames takes minutes on a loaded host, and doing it first left the
+    # whole app serving an empty feed list until it finished.
     await fetch_feed_list()
+
+    # Resolve and prime coastal cameras in the background, then merge them into
+    # the feed list. They appear a little after the road cameras rather than
+    # holding up all ~2300 of them.
+    if yt_grabber is not None:
+        async def _bring_up_coastal():
+            loop = asyncio.get_event_loop()
+            try:
+                await loop.run_in_executor(None, yt_grabber.refresh_ids)
+                # Merge the coastal feeds in now that they are known.
+                await fetch_feed_list()
+                cams = list(yt_grabber.resolved)
+                step = yt_grabber.max_concurrent
+                for i in range(0, len(cams), step):
+                    await asyncio.gather(*(
+                        loop.run_in_executor(None, yt_grabber.grab, c)
+                        for c in cams[i:i + step]
+                    ), return_exceptions=True)
+                logger.info("coastal cameras ready", cameras=len(cams))
+                asyncio.create_task(yt_grabber.run())
+            except Exception as exc:
+                logger.error("coastal bring-up failed", error=str(exc))
+        asyncio.create_task(_bring_up_coastal())
 
     feeds_data = app_state.feeds_data
 

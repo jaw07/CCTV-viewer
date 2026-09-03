@@ -121,10 +121,10 @@ sources:
   cwa_coastal:
     enabled: true
     west_only: false      # true = Taiwan Strait facing cameras only
-    frame_interval: 60    # seconds between frame grabs per camera
+    frame_interval: 120   # seconds between frame grabs per camera
     # Each grab spawns yt-dlp + ffmpeg; with ~120 cameras, unbounded
     # concurrency would swamp the host.
-    max_concurrent_grabs: 6
+    max_concurrent_grabs: 4
     # Fallback only. Capture time is normally read from the clock the camera
     # burns into the frame (authoritative). This offset is applied only when a
     # camera has no on-image clock, to compensate for YouTube live delivery lag
