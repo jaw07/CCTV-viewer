@@ -1788,7 +1788,8 @@ async def get_map_data():
                 "description": feed.get('description', ''),
                 "direction": feed.get('direction', ''),
                 "isWorking": feed_status.get(feed['id'], False),
-                "hasVehicles": vehicle_detected.get(feed['id'], False)
+                "hasVehicles": vehicle_detected.get(feed['id'], False),
+                "locationSource": feed.get('locationSource', '')
             }
         }
         map_features.append(feature)

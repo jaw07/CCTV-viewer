@@ -18,30 +18,21 @@ import argparse
 import json
 import subprocess
 import sys
+from pathlib import Path
 
-CHANNEL = "https://www.youtube.com/@cwa-tw/streams"
 
-# Title prefix -> metadata. Coordinates are APPROXIMATE (siting is not published
-# by CWA); they place the marker in the right harbour, not on the exact mast.
-CAMERAS = {
-    "基隆和平島": dict(en="Keelung Heping Island", coast="north", lat=25.1594, lon=121.7614, water="East China Sea"),
-    "碧砂":       dict(en="Keelung Bisha Fishing Port", coast="north", lat=25.1478, lon=121.7847, water="harbour"),
-    "龍洞":       dict(en="New Taipei Longdong", coast="northeast", lat=25.1103, lon=121.9222, water="Pacific"),
-    "新北福隆":   dict(en="New Taipei Fulong", coast="northeast", lat=25.0208, lon=121.9442, water="Pacific"),
-    "宜蘭外澳":   dict(en="Yilan Wai'ao", coast="east", lat=24.8756, lon=121.8447, water="Pacific"),
-    "宜蘭蘇澳":   dict(en="Yilan Suao Port", coast="east", lat=24.5936, lon=121.8672, water="harbour"),
-    "臺東富岡漁港": dict(en="Taitung Fugang Fishing Port", coast="east", lat=22.7936, lon=121.1897, water="harbour"),
-    # --- West coast: faces the Taiwan Strait ---
-    "臺南安平港": dict(en="Tainan Anping Port", coast="west", lat=23.0028, lon=120.1600, water="harbour"),
-    "新竹":       dict(en="Hsinchu Coast Guard (12th Sea Patrol)", coast="west", lat=24.8500, lon=120.9200, water="Taiwan Strait"),
-}
+# Camera metadata - including the sourced coordinates and their provenance -
+# lives with the backend so the two cannot drift apart. This script is just a
+# CLI over the same table.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+from youtube_frames import CWA_CAMERAS as CAMERAS, CWA_CHANNEL  # noqa: E402
 
 
 def resolve_live():
     """Return [(video_id, title)] for streams currently live on the channel."""
     try:
         out = subprocess.run(
-            ["yt-dlp", "--no-warnings", "--flat-playlist", "--print", "%(id)s|%(title)s", CHANNEL],
+            ["yt-dlp", "--no-warnings", "--flat-playlist", "--print", "%(id)s|%(title)s", CWA_CHANNEL],
             capture_output=True, text=True, timeout=180,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -95,7 +86,7 @@ def main():
         if args.west and meta["coast"] != "west":
             continue
         feeds.append({
-            "id": f"CWA-{key}",
+            "id": f"CWA-{meta['slug']}",
             "videoId": vid,
             "streamUrl": f"https://www.youtube.com/watch?v={vid}",
             "embedUrl": f"https://www.youtube.com/embed/{vid}",
@@ -106,6 +97,7 @@ def main():
             "lon": meta["lon"],
             "direction": meta["coast"],
             "source": "CWA",
+            "locationSource": meta.get("loc_src", "unknown"),
         })
 
     if args.frames:

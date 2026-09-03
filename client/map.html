@@ -238,6 +238,11 @@
             margin-bottom: var(--spacing-xs);
         }
 
+        .popup-loc-note {
+            font-size: 11px;
+            color: var(--color-text-tertiary);
+        }
+
         .popup-status {
             display: inline-block;
             padding: var(--spacing-xs) var(--spacing-sm);
@@ -478,6 +483,7 @@
                     <div class="popup-info">Location: ${feed.locationMile || 'Unknown'}</div>
                     <div class="popup-info">Direction: ${feed.direction || 'N/A'}</div>
                     <div class="popup-info">ID: ${feed.id}</div>
+                    ${feed.locationSource ? `<div class="popup-info popup-loc-note">Position: ${feed.locationSource} (site-level)</div>` : ''}
                     <div class="popup-status ${statusClass}">${status}</div>
                     ${feed.isWorking ? `
                         <img class="popup-image"

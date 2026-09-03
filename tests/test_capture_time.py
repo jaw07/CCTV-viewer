@@ -105,3 +105,48 @@ class TestFrameTimestampOCR:
     def test_handles_corrupt_bytes(self):
         from frame_timestamp import extract_timestamp
         assert extract_timestamp(b"not an image") is None
+
+
+class TestCameraCoordinates:
+    """Coordinates are shown on a map and broadcast in CoT, so guard them."""
+
+    @staticmethod
+    def _cams():
+        from youtube_frames import CWA_CAMERAS
+        return CWA_CAMERAS
+
+    def test_all_within_taiwan_bounds(self):
+        """Catch a transposed or mistyped coordinate landing in the wrong country."""
+        for zh, meta in self._cams().items():
+            assert 21.5 <= meta["lat"] <= 26.5, f"{zh} latitude out of Taiwan bounds"
+            assert 119.0 <= meta["lon"] <= 122.5, f"{zh} longitude out of Taiwan bounds"
+
+    def test_lat_lon_not_swapped(self):
+        """Taiwan's lat and lon ranges do not overlap, so a swap is detectable."""
+        for zh, meta in self._cams().items():
+            assert meta["lat"] < meta["lon"], f"{zh} looks like lat/lon are swapped"
+
+    def test_every_camera_records_its_position_source(self):
+        for zh, meta in self._cams().items():
+            assert meta.get("loc_src"), f"{zh} has no loc_src provenance"
+
+    def test_west_coast_cameras_are_actually_west(self):
+        """A west-coast label with an east-coast longitude would misplace the marker."""
+        for zh, meta in self._cams().items():
+            if meta["coast"] == "west":
+                assert meta["lon"] < 121.0, f"{zh} marked west but sits at lon {meta['lon']}"
+
+    def test_coordinates_are_distinct(self):
+        seen = {}
+        for zh, meta in self._cams().items():
+            key = (round(meta["lat"], 4), round(meta["lon"], 4))
+            assert key not in seen, f"{zh} shares coordinates with {seen.get(key)}"
+            seen[key] = zh
+
+    def test_feed_records_expose_the_source(self):
+        from youtube_frames import YouTubeFrameGrabber, CWA_CAMERAS
+        g = YouTubeFrameGrabber()
+        g.resolved = {m["slug"]: {"videoId": "x", "title": zh, "meta": m}
+                      for zh, m in CWA_CAMERAS.items()}
+        for feed in g.build_feeds():
+            assert feed["locationSource"], f"{feed['id']} lost its position source"

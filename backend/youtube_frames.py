@@ -29,19 +29,26 @@ except ImportError:  # direct execution
 
 URL_SCHEME = "ytframe://"
 
-# Title prefix -> metadata for the CWA coastal network. Coordinates are
-# APPROXIMATE: CWA does not publish mast positions, so these place the marker in
-# the correct harbour/headland, not on the exact camera.
+# Title prefix -> metadata for the CWA coastal network.
+#
+# Coordinates are sourced, not guessed - `loc_src` records which:
+#   "CWA ...潮位站"  the agency's own tide-station position (best available,
+#                    published by CWA; the camera sits at that station)
+#   "OSM ..."        the harbour/beach feature from OpenStreetMap, for sites
+#                    with no CWA station. Good to roughly the size of the
+#                    harbour, not the exact mast.
+# CWA does not publish camera mast positions, so nothing here is better than
+# site-level. Surfaced to the UI so the accuracy is visible rather than implied.
 CWA_CAMERAS = {
-    "基隆和平島": dict(slug="keelung-heping", en="Keelung Heping Island", coast="north", lat=25.1594, lon=121.7614, water="East China Sea"),
-    "碧砂": dict(slug="keelung-bisha", en="Keelung Bisha Fishing Port", coast="north", lat=25.1478, lon=121.7847, water="harbour"),
-    "龍洞": dict(slug="longdong", en="New Taipei Longdong", coast="northeast", lat=25.1103, lon=121.9222, water="Pacific"),
-    "新北福隆": dict(slug="fulong", en="New Taipei Fulong", coast="northeast", lat=25.0208, lon=121.9442, water="Pacific"),
-    "宜蘭外澳": dict(slug="yilan-waiao", en="Yilan Wai'ao", coast="east", lat=24.8756, lon=121.8447, water="Pacific"),
-    "宜蘭蘇澳": dict(slug="yilan-suao", en="Yilan Suao Port", coast="east", lat=24.5936, lon=121.8672, water="harbour"),
-    "臺東富岡漁港": dict(slug="taitung-fugang", en="Taitung Fugang Fishing Port", coast="east", lat=22.7936, lon=121.1897, water="harbour"),
-    "臺南安平港": dict(slug="tainan-anping", en="Tainan Anping Port", coast="west", lat=23.0028, lon=120.1600, water="harbour"),
-    "新竹": dict(slug="hsinchu-cga", en="Hsinchu Coast Guard (12th Sea Patrol)", coast="west", lat=24.8500, lon=120.9200, water="Taiwan Strait"),
+    "基隆和平島": dict(slug="keelung-heping", en="Keelung Heping Island", coast="north", lat=25.1603, lon=121.7695, water="East China Sea", loc_src="OSM 和平島公園"),
+    "碧砂": dict(slug="keelung-bisha", en="Keelung Bisha Fishing Port", coast="north", lat=25.14673, lon=121.78643, water="harbour", loc_src="OSM 碧砂漁港"),
+    "龍洞": dict(slug="longdong", en="New Taipei Longdong", coast="northeast", lat=25.0975, lon=121.9181, water="Pacific", loc_src="CWA 龍洞潮位站"),
+    "新北福隆": dict(slug="fulong", en="New Taipei Fulong", coast="northeast", lat=25.0217, lon=121.9503, water="Pacific", loc_src="CWA 福隆潮位站"),
+    "宜蘭外澳": dict(slug="yilan-waiao", en="Yilan Wai'ao", coast="east", lat=24.87785, lon=121.84298, water="Pacific", loc_src="OSM 外澳海灘"),
+    "宜蘭蘇澳": dict(slug="yilan-suao", en="Yilan Suao Port", coast="east", lat=24.59247, lon=121.86577, water="harbour", loc_src="CWA 蘇澳潮位站"),
+    "臺東富岡漁港": dict(slug="taitung-fugang", en="Taitung Fugang Fishing Port", coast="east", lat=22.79084, lon=121.19049, water="harbour", loc_src="OSM 富岡漁港"),
+    "臺南安平港": dict(slug="tainan-anping", en="Tainan Anping Port", coast="west", lat=22.99243, lon=120.15437, water="harbour", loc_src="OSM 安平漁港"),
+    "新竹": dict(slug="hsinchu-cga", en="Hsinchu Coast Guard (12th Sea Patrol)", coast="west", lat=24.8486, lon=120.9206, water="Taiwan Strait", loc_src="CWA 新竹潮位站"),
 }
 
 CWA_CHANNEL = "https://www.youtube.com/@cwa-tw/streams"
@@ -231,6 +238,7 @@ class YouTubeFrameGrabber:
                 "lat": str(meta["lat"]),
                 "lon": str(meta["lon"]),
                 "direction": meta["coast"],
+                "locationSource": meta.get("loc_src", "unknown"),
             })
         return feeds
 
