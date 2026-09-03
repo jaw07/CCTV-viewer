@@ -430,6 +430,11 @@
         }
 
         function createEnglishDescription(feed) {
+            // Coastal cameras look out to sea rather than along a carriageway,
+            // so "(northbound)" would be meaningless for them.
+            if (feed.id && feed.id.startsWith('CWA-')) {
+                return `${feed.roadName} - ${feed.locationMile}`;
+            }
             const direction = translateDirection(feed.direction);
             return `${feed.roadName} at ${feed.locationMile} (${direction}bound)`;
         }
