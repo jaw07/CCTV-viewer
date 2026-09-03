@@ -65,7 +65,7 @@ def match(title):
 def grab_frame(video_id, path):
     """Pull one JPEG from the live stream. Returns True on success."""
     url = subprocess.run(
-        ["yt-dlp", "--no-warnings", "-f", "best[height<=720]/best", "-g",
+        ["yt-dlp", "--no-warnings", "-f", "bv*[height<=720]/bv*/best[height<=720]/best", "-g",
          f"https://www.youtube.com/watch?v={video_id}"],
         capture_output=True, text=True, timeout=120,
     ).stdout.strip().splitlines()

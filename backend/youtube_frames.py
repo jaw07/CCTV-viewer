@@ -146,7 +146,7 @@ class YouTubeFrameGrabber:
         if not entry:
             return None
         try:
-            proc = _run(["yt-dlp", "--no-warnings", "-f", "best[height<=720]/best", "-g",
+            proc = _run(["yt-dlp", "--no-warnings", "-f", "bv*[height<=720]/bv*/best[height<=720]/best", "-g",
                          f"https://www.youtube.com/watch?v={entry['videoId']}"], timeout=120)
         except Exception:
             return None
