@@ -174,9 +174,17 @@ class AppState:
         return None
 
     def cache_image(self, feed_id: str, image_bytes: bytes,
-                    is_working: bool = True, has_vehicles: bool = False):
+                    is_working: bool = True, has_vehicles: bool = False,
+                    capture_time: Optional[float] = None):
         if self.feed_cache:
-            self.feed_cache.set_image(feed_id, image_bytes, is_working, has_vehicles)
+            self.feed_cache.set_image(feed_id, image_bytes, is_working, has_vehicles,
+                                      capture_time=capture_time)
+
+    def get_capture_time(self, feed_id: str) -> Optional[float]:
+        """When the cached frame for this feed was actually captured."""
+        if self.feed_cache:
+            return self.feed_cache.get_capture_time(feed_id)
+        return None
 
     def has_image_changed(self, feed_id: str, new_image_bytes: bytes) -> bool:
         if self.feed_cache:

@@ -1,29 +1,24 @@
 #!/bin/bash
 set -e
 
-# Start backend API server
+# The backend serves both the API and the static client (see the StaticFiles
+# mount in backend/main.py), so a single port is all that is exposed. Serving
+# from one origin is what lets the session cookie and the WebSocket work behind
+# a single HTTPS hostname.
 python backend/main.py &
 BACKEND_PID=$!
 
-# Start frontend HTTP server
-cd /app/client
-python -m http.server 8000 &
-FRONTEND_PID=$!
-cd /app
-
-# Trap signals for graceful shutdown
 cleanup() {
-    echo "Stopping servers..."
-    kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
-    wait $BACKEND_PID $FRONTEND_PID 2>/dev/null
-    echo "Servers stopped."
+    echo "Stopping server..."
+    kill $BACKEND_PID 2>/dev/null
+    wait $BACKEND_PID 2>/dev/null
+    echo "Server stopped."
     exit 0
 }
 
 trap cleanup SIGTERM SIGINT
 
-# Wait for either process to exit
-wait -n
+wait $BACKEND_PID
 EXIT_CODE=$?
 cleanup
 exit $EXIT_CODE

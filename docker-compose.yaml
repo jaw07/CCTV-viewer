@@ -1,15 +1,23 @@
 services:
   cctv-viewer:
     build: .
+    # Single port: the backend serves the API and the static client from one
+    # origin. Bound to localhost because cloudflared reaches it from the host.
     ports:
-      - "8000:8000"
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./config.yaml:/app/config.yaml:ro
     environment:
-      - CCTV_AUTH_ENABLED=false
+      - CCTV_ENV=production
       - CCTV_SSL_VERIFY=true
-      - CCTV_ENV=development
+      # Browser login. Generate a hash with:
+      #   python -m backend.middleware.session_auth '<password>'
+      - CCTV_AUTH_ENABLED=true
+      - CCTV_AUTH_USERS=${CCTV_AUTH_USERS:?set CCTV_AUTH_USERS in .env}
+      - CCTV_SESSION_SECRET=${CCTV_SESSION_SECRET:?set CCTV_SESSION_SECRET in .env}
+      # Cloudflare terminates TLS, so the session cookie must stay Secure.
+      - CCTV_COOKIE_SECURE=true
+      - CCTV_SESSION_TTL=${CCTV_SESSION_TTL:-43200}
     restart: unless-stopped

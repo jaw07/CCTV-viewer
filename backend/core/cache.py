@@ -209,6 +209,10 @@ class FeedCache:
         self._status: Dict[str, bool] = {}  # feed_id -> is_working
         self._vehicle_detected: Dict[str, bool] = {}  # feed_id -> has_vehicles
         self._image_hash: Dict[str, str] = {}  # feed_id -> hash
+        # feed_id -> epoch seconds the frame was actually captured (not cached).
+        # Detections are broadcast with this, so a slow cache cycle can never
+        # attribute a detection to the wrong time.
+        self._capture_time: Dict[str, float] = {}
         self._lock = Lock()
 
     def get_image(self, feed_id: str) -> Optional[bytes]:
@@ -220,6 +224,7 @@ class FeedCache:
         image_bytes: bytes,
         is_working: bool = True,
         has_vehicles: bool = False,
+        capture_time: Optional[float] = None,
     ):
         image_hash = hashlib.md5(image_bytes).hexdigest()
 
@@ -234,6 +239,12 @@ class FeedCache:
             self._status[feed_id] = is_working
             self._vehicle_detected[feed_id] = has_vehicles
             self._image_hash[feed_id] = image_hash
+            self._capture_time[feed_id] = capture_time if capture_time is not None else time.time()
+
+    def get_capture_time(self, feed_id: str) -> Optional[float]:
+        """Epoch seconds when this feed's cached frame was captured."""
+        with self._lock:
+            return self._capture_time.get(feed_id)
 
     def has_image_changed(self, feed_id: str, new_image_bytes: bytes) -> bool:
         new_hash = hashlib.md5(new_image_bytes).hexdigest()

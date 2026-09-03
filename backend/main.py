@@ -20,6 +20,7 @@ import sys
 import time
 import socket
 import hashlib
+import json
 import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -32,10 +33,11 @@ import numpy as np
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException, Response, WebSocket, Depends, Query
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from PIL import Image
 from ultralytics import YOLO
@@ -57,6 +59,8 @@ try:
     from .middleware.error_handler import (
         custom_http_exception_handler, custom_validation_exception_handler
     )
+    from .middleware import session_auth
+    from . import youtube_frames
     from .schemas import (
         StreamConfigRequest, StreamConfigResponse,
         SearchResponse, FeedHistoryResponse, FeedStatsResponse,
@@ -81,6 +85,8 @@ except ImportError:
     from middleware.error_handler import (
         custom_http_exception_handler, custom_validation_exception_handler
     )
+    from middleware import session_auth
+    import youtube_frames
     from schemas import (
         StreamConfigRequest, StreamConfigResponse,
         SearchResponse, FeedHistoryResponse, FeedStatsResponse,
@@ -142,6 +148,15 @@ alert_manager = app_state.alert_manager
 
 # Detection settings from config
 VEHICLE_CLASSES = CONFIG.get('detection', {}).get('vehicle_classes', [2, 5, 7])
+# Coastal/harbour cameras see vessels, not cars. COCO class 8 is 'boat'.
+if CONFIG.get('detection', {}).get('detect_boats', False) and 8 not in VEHICLE_CLASSES:
+    VEHICLE_CLASSES = list(VEHICLE_CLASSES) + [8]
+
+# Set up during startup when sources.cwa_coastal is enabled (see lifespan).
+yt_grabber = None
+_YT_CFG = CONFIG.get('sources', {}).get('cwa_coastal', {})
+YT_ENABLED = _YT_CFG.get('enabled', False)
+YT_WEST_ONLY = _YT_CFG.get('west_only', False)
 MIN_BOX_SIZE = CONFIG.get('detection', {}).get('min_box_size', 20)
 CONFIDENCE_THRESHOLD = CONFIG.get('detection', {}).get('confidence_threshold', 0.6)
 SELECTIVE_SKIP_INTERVAL = CONFIG.get('performance', {}).get('selective_skip_interval', 2)
@@ -214,13 +229,19 @@ def detect_device() -> str:
         return 'cpu'
 
 
-def generate_cot_message(feed: Dict) -> str:
-    """Generate a CoT XML message for a camera with vehicle detection"""
-    # Generate ISO 8601 timestamp with milliseconds
-    now = datetime.now(timezone.utc)
-    time_str = now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+def generate_cot_message(feed: Dict, capture_time: Optional[float] = None) -> str:
+    """Generate a CoT XML message for a camera with vehicle detection.
 
-    # Stale time (1 hour from now)
+    `capture_time` is when the analysed frame was actually captured. CoT
+    consumers treat `time`/`start` as observation time, so using "now" would
+    misdate the detection by however long the frame sat in the cache - which on
+    a full feed cycle can be minutes. `now` is kept only for the stale window.
+    """
+    now = datetime.now(timezone.utc)
+    observed = datetime.fromtimestamp(capture_time, timezone.utc) if capture_time else now
+    time_str = observed.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+
+    # Stale time: 1 hour after the message is produced.
     stale_time = datetime.fromtimestamp(now.timestamp() + 3600, timezone.utc)
     stale_str = stale_time.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
@@ -239,6 +260,8 @@ def generate_cot_message(feed: Dict) -> str:
     if feed.get('description'):
         remarks_parts.append(feed['description'])
     remarks_parts.append("Vehicle Detected")
+    if capture_time:
+        remarks_parts.append(f"Observed: {time_str}")
     remarks = " | ".join(remarks_parts)
 
     # Get lat/lon
@@ -553,6 +576,12 @@ async def fetch_feed_list():
                     feeds.append(feed)
 
             # Update app_state instead of global variable
+            if yt_grabber is not None:
+                coastal = yt_grabber.build_feeds(west_only=YT_WEST_ONLY)
+                feeds = feeds + coastal
+                if coastal:
+                    logger.info("Added coastal camera feeds", count=len(coastal))
+
             app_state.feeds_data = feeds
             app_state.last_update = time.time()
 
@@ -691,6 +720,13 @@ async def fetch_snapshot(feed: Dict) -> Optional[bytes]:
     """Fetch a single snapshot from a feed"""
     url = feed['imageUrl']
 
+    # YouTube-backed cameras are served from the frame grabber's cache rather
+    # than over HTTP (see backend/youtube_frames.py).
+    if url.startswith(youtube_frames.URL_SCHEME):
+        if yt_grabber is None:
+            return None
+        return yt_grabber.get_frame(youtube_frames.YouTubeFrameGrabber.camera_id_from_url(url))
+
     # Use shared SSL context for proper verification
     async with httpx.AsyncClient(verify=ssl_context, timeout=10.0) as client:
         try:
@@ -752,6 +788,14 @@ async def update_feed_cache_worker():
                 feed_id = feed['id']
                 url = feed['imageUrl']
                 current_time = time.time()
+
+                # YouTube-backed cameras come from the grabber cache, not HTTP.
+                if url.startswith(youtube_frames.URL_SCHEME):
+                    if yt_grabber is None:
+                        return feed_id, None, False, "grabber disabled"
+                    cam = youtube_frames.YouTubeFrameGrabber.camera_id_from_url(url)
+                    frame = yt_grabber.get_frame(cam)
+                    return feed_id, frame, bool(frame), (None if frame else "no frame yet")
 
                 # OPTIMIZATION: Skip feeds in backoff period (using app_state)
                 if not app_state.should_retry_feed(feed_id, current_time):
@@ -839,7 +883,17 @@ async def update_feed_cache_worker():
                                         logger.error("Error sending WebSocket update", feed_id=feed_id, error=str(e))
 
                             # Store the annotated image (with boxes) in FeedCache
-                            app_state.cache_image(feed_id, annotated_img, is_working=True, has_vehicles=has_vehicles)
+                            # For YouTube-backed cameras the frame was pulled by the
+                            # grabber earlier; use that instant, not "now".
+                            captured_at = time.time()
+                            if yt_grabber is not None:
+                                _fi = app_state.get_feed_by_id(feed_id)
+                                _url = str(_fi.get('imageUrl', '')) if _fi else ''
+                                if _url.startswith(youtube_frames.URL_SCHEME):
+                                    cam = youtube_frames.YouTubeFrameGrabber.camera_id_from_url(_url)
+                                    captured_at = yt_grabber.frame_time(cam) or captured_at
+                            app_state.cache_image(feed_id, annotated_img, is_working=True,
+                                                  has_vehicles=has_vehicles, capture_time=captured_at)
 
                             # Send streaming updates if enabled and vehicle detected
                             stream_cfg = app_state.stream_config
@@ -848,7 +902,10 @@ async def update_feed_cache_worker():
                                 if feed_info:
                                     try:
                                         if stream_cfg.format == "cot":
-                                            cot_msg = generate_cot_message(feed_info)
+                                            cot_msg = generate_cot_message(
+                                                feed_info,
+                                                capture_time=app_state.get_capture_time(feed_id),
+                                            )
                                             send_cot_udp(cot_msg, stream_cfg.ip, stream_cfg.port)
                                         elif stream_cfg.format == "lattice":
                                             publish_lattice_entity(feed_info, stream_cfg.latticeIntegration, annotated_img)
@@ -908,6 +965,33 @@ async def update_feed_cache_worker():
 
 async def initialize_feeds():
     """Initialize feeds in background with prioritization"""
+    global yt_grabber
+
+    # Coastal YouTube cameras: resolve current video IDs before the first feed
+    # fetch so they appear in the very first feed list.
+    if YT_ENABLED:
+        ok, why = youtube_frames.tools_available()
+        if not ok:
+            logger.warning("Coastal cameras disabled - required tools not found", detail=why)
+        else:
+            yt_grabber = youtube_frames.YouTubeFrameGrabber(
+                frame_interval=_YT_CFG.get('frame_interval', 20),
+                id_refresh_interval=_YT_CFG.get('id_refresh_interval', 3600),
+                stream_latency=_YT_CFG.get('stream_latency_seconds', 0),
+                logger=logger,
+            )
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, yt_grabber.refresh_ids)
+            # Prime one frame per camera BEFORE the first cache cycle. Without
+            # this the cycle reaches the coastal feeds a second before the first
+            # frames land, marks them offline, and they stay that way until the
+            # next full pass over ~2300 feeds.
+            await asyncio.gather(*(
+                loop.run_in_executor(None, yt_grabber.grab, cam)
+                for cam in list(yt_grabber.resolved)
+            ), return_exceptions=True)
+            asyncio.create_task(yt_grabber.run())
+
     # Fetch initial feed list
     await fetch_feed_list()
 
@@ -915,10 +999,15 @@ async def initialize_feeds():
 
     # OPTIMIZATION: Prioritize major highways (國道) for faster initial cache warm-up
     if feeds_data:
-        priority_feeds = [f for f in feeds_data if '國道' in f.get('roadName', '')]
-        other_feeds = [f for f in feeds_data if '國道' not in f.get('roadName', '')]
-        app_state.feeds_data = priority_feeds + other_feeds
-        logger.info("Feed prioritization complete", priority=len(priority_feeds), other=len(other_feeds))
+        # Coastal cameras first (few, and the frames are already in memory),
+        # then major highways (國道), then everything else.
+        coastal = [f for f in feeds_data if f.get('id', '').startswith('CWA-')]
+        rest = [f for f in feeds_data if not f.get('id', '').startswith('CWA-')]
+        priority_feeds = [f for f in rest if '國道' in f.get('roadName', '')]
+        other_feeds = [f for f in rest if '國道' not in f.get('roadName', '')]
+        app_state.feeds_data = coastal + priority_feeds + other_feeds
+        logger.info("Feed prioritization complete", coastal=len(coastal),
+                    priority=len(priority_feeds), other=len(other_feeds))
 
     # Sync feeds to database if enabled
     if app_state.db_manager and feeds_data:
@@ -1201,6 +1290,21 @@ app.add_middleware(
     enabled=os.environ.get("CCTV_AUTH_ENABLED", "true").lower() == "true",
 )
 
+# 4b. Browser session authentication (login form + signed cookie)
+app.add_middleware(
+    session_auth.SessionAuthMiddleware,
+    exclude_paths=[
+        "/", "/login.html", "/health", "/health/live", "/health/ready",
+        "/docs", "/redoc", "/openapi.json",
+        "/api/auth/login", "/api/auth/logout",
+    ],
+    exclude_prefixes=["/metrics", "/styles/", "/scripts/"],
+    enabled=os.environ.get("CCTV_AUTH_ENABLED", "true").lower() == "true",
+)
+
+# 4c. Prevent caching of HTML/API/redirects so auth state is never served stale
+app.add_middleware(session_auth.NoStoreMiddleware)
+
 # 5. GZip compression
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -1232,6 +1336,12 @@ app.mount("/metrics", metrics_app)
 
 @app.get("/")
 async def root():
+    """Entry point: send browsers to the UI (which gates on login)."""
+    return RedirectResponse("/index.html", status_code=302)
+
+
+@app.get("/api")
+async def api_root():
     """API root"""
     stats = app_state.get_stats()
     return {
@@ -1244,14 +1354,108 @@ async def root():
     }
 
 
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    """Exchange username/password for a signed session cookie."""
+    client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() \
+        or (request.client.host if request.client else "unknown")
+
+    if session_auth.is_login_throttled(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed sign-in attempts. Try again in a few minutes.",
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid request body")
+
+    username = (body or {}).get("username", "")
+    password = (body or {}).get("password", "")
+    if not isinstance(username, str) or not isinstance(password, str):
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    if not session_auth.authenticate(username, password):
+        session_auth.record_failed_login(client_ip)
+        logger.warning("failed_login", extra={"username": username, "client_ip": client_ip})
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    session_auth.clear_failed_logins(client_ip)
+    logger.info("login_success", extra={"username": username, "client_ip": client_ip})
+
+    response = JSONResponse({"status": "ok", "username": username})
+    response.set_cookie(
+        session_auth.COOKIE_NAME,
+        session_auth.create_session_token(username),
+        max_age=session_auth.SESSION_TTL,
+        **session_auth.cookie_kwargs(),
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout():
+    """Clear the session cookie."""
+    response = JSONResponse({"status": "ok"})
+    response.delete_cookie(session_auth.COOKIE_NAME, path="/")
+    return response
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    """Return the signed-in user, or auth_required=False when auth is off."""
+    if not session_auth.get_users() or \
+            os.environ.get("CCTV_AUTH_ENABLED", "true").lower() != "true":
+        return {"auth_required": False, "username": None}
+    username = session_auth.verify_session_token(
+        request.cookies.get(session_auth.COOKIE_NAME)
+    )
+    if not username:
+        raise HTTPException(status_code=401, detail="Login required")
+    return {"auth_required": True, "username": username}
+
+
+# The feed catalogue is static once loaded, but it is ~90% of a 700KB payload.
+# Re-serialising it per request burned CPU that the detection threads also need,
+# so the static half is rendered once and reused; only the live status is rebuilt.
+_feeds_blob_cache: Dict[str, object] = {"key": None, "blob": b""}
+
+
 @app.get("/api/feeds")
 async def get_feeds():
     """Get all feed metadata"""
+    cache_key = (id(app_state.feeds_data), len(app_state.feeds_data))
+    if _feeds_blob_cache["key"] != cache_key:
+        _feeds_blob_cache["blob"] = json.dumps(
+            app_state.feeds_data, separators=(",", ":")
+        ).encode()
+        _feeds_blob_cache["key"] = cache_key
+
+    def dump(value) -> bytes:
+        return json.dumps(value, separators=(",", ":")).encode()
+
+    body = b"".join([
+        b'{"feeds":', _feeds_blob_cache["blob"],
+        b',"status":', dump(app_state.get_all_feed_status()),
+        b',"vehicleDetected":', dump(app_state.get_all_vehicle_detected()),
+        b',"lastUpdate":', dump(app_state.last_update),
+        b"}",
+    ])
+    return Response(content=body, media_type="application/json")
+
+
+@app.get("/api/feeds/status")
+async def get_feeds_status():
+    """Live status only.
+
+    The UI polls this every couple of seconds. It used to poll /api/feeds, which
+    ships the whole 700KB catalogue each time purely to read these two maps.
+    """
     return {
-        "feeds": app_state.feeds_data,
         "status": app_state.get_all_feed_status(),
         "vehicleDetected": app_state.get_all_vehicle_detected(),
-        "lastUpdate": app_state.last_update
+        "lastUpdate": app_state.last_update,
     }
 
 
@@ -1262,7 +1466,26 @@ async def get_snapshot(feed_id: str):
     if cached_image is None:
         raise HTTPException(status_code=404, detail="Feed not found or offline")
 
-    return Response(content=cached_image, media_type="image/jpeg")
+    headers = {}
+    captured_at = app_state.get_capture_time(feed_id)
+    if captured_at:
+        observed = datetime.fromtimestamp(captured_at, timezone.utc)
+        # ISO for machines, Last-Modified for HTTP caches, age for quick checks.
+        headers["X-Capture-Time"] = observed.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+        headers["X-Capture-Age-Seconds"] = str(int(time.time() - captured_at))
+        # 'image' = read from the camera's own on-frame clock (authoritative);
+        # 'download' = when we pulled it (fallback, may lag real time).
+        src = None
+        if yt_grabber is not None:
+            _f = app_state.get_feed_by_id(feed_id)
+            _u = str(_f.get('imageUrl', '')) if _f else ''
+            if _u.startswith(youtube_frames.URL_SCHEME):
+                src = yt_grabber.frame_time_source(
+                    youtube_frames.YouTubeFrameGrabber.camera_id_from_url(_u))
+        headers["X-Capture-Time-Source"] = src or "download"
+        headers["Last-Modified"] = observed.strftime('%a, %d %b %Y %H:%M:%S GMT')
+
+    return Response(content=cached_image, media_type="image/jpeg", headers=headers)
 
 
 @app.get("/api/feeds/{feed_id}/stream")
@@ -1675,6 +1898,15 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     client_id = websocket.query_params.get("client_id", "anonymous")
 
+    # Session-cookie auth. The HTTP middleware stack does not run for WebSocket
+    # connections, so the same cookie is checked explicitly here.
+    session_auth_enabled = os.environ.get("CCTV_AUTH_ENABLED", "true").lower() == "true"
+    if session_auth_enabled and session_auth.get_users():
+        cookie = websocket.cookies.get(session_auth.COOKIE_NAME)
+        if not session_auth.verify_session_token(cookie):
+            await websocket.close(code=4001, reason="Authentication required")
+            return
+
     # Optional WebSocket authentication
     ws_auth_enabled = os.environ.get("CCTV_WS_AUTH_ENABLED", "false").lower() == "true"
     if ws_auth_enabled:
@@ -1702,6 +1934,19 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         app_state.ws_manager.disconnect(websocket)
         logger.debug("WebSocket client disconnected", client_id=client_id)
+
+
+# ============================================================================
+# Static client
+# ============================================================================
+# Mounted last so every API route above still wins. Serving the UI from the same
+# process (and therefore the same origin) is what lets the session cookie and the
+# WebSocket work behind a single HTTPS hostname.
+_CLIENT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
+if os.path.isdir(_CLIENT_DIR):
+    app.mount("/", StaticFiles(directory=_CLIENT_DIR, html=True), name="client")
+else:
+    logger.warning("Client directory not found, UI will not be served", path=_CLIENT_DIR)
 
 
 if __name__ == "__main__":

@@ -11,3 +11,6 @@ __pycache__/
 *.db-shm
 *.db-wal
 data/
+
+# Secrets (session secret + password hashes)
+.env

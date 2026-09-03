@@ -59,3 +59,4 @@ httpx[http2]==0.26.0
 # flake8==7.0.0
 # mypy==1.8.0
 # isort==5.13.2
+pytesseract==0.3.13

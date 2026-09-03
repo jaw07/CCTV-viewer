@@ -8,12 +8,18 @@ import pytest
 class TestRootEndpoint:
     """Tests for root endpoint"""
 
-    async def test_root_returns_info(self, async_client):
-        """Test root endpoint returns API info"""
-        response = await async_client.get("/")
+    async def test_api_root_returns_info(self, async_client):
+        """Test API root endpoint returns API info"""
+        response = await async_client.get("/api")
         assert response.status_code == 200
         data = response.json()
         assert "name" in data
+
+    async def test_root_redirects_to_ui(self, async_client):
+        """Browsers hitting / should land on the UI, not the API JSON"""
+        response = await async_client.get("/", follow_redirects=False)
+        assert response.status_code == 302
+        assert response.headers["location"] == "/index.html"
 
 
 @pytest.mark.asyncio  
@@ -91,3 +97,16 @@ class TestSnapshotEndpoint:
         response = await async_client.get("/api/feeds/non-existent/snapshot")
         assert response.status_code == 404
 
+
+
+@pytest.mark.asyncio
+class TestFeedsPayloadShape:
+    """The feeds payload is hand-assembled for speed; guard its shape."""
+
+    async def test_feeds_payload_is_valid_json_with_expected_keys(self, async_client):
+        response = await async_client.get("/api/feeds")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/json")
+        data = response.json()
+        assert set(data) == {"feeds", "status", "vehicleDetected", "lastUpdate"}
+        assert isinstance(data["feeds"], list)

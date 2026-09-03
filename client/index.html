@@ -102,6 +102,14 @@
                         </svg>
                         Monitoring
                     </a>
+                    <button type="button" class="btn" id="signOutBtn" title="Sign out">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                            <polyline points="16 17 21 12 16 7"/>
+                            <line x1="21" y1="12" x2="9" y2="12"/>
+                        </svg>
+                        Sign out
+                    </button>
                 </div>
             </div>
             <div id="connectionStatus" class="connection-status disconnected" role="status" aria-live="polite">
@@ -322,8 +330,47 @@
         // Configuration
         // ========================================
         const hostname = window.location.hostname;
-        const API_URL = `http://${hostname}:8001`;
-        const WS_URL = `ws://${hostname}:8001`;
+        // Same-origin when the backend serves the client (deployment shape);
+        // falls back to the dev backend port when opened from the :8000 server.
+        const DEV_SPLIT = window.location.port === '8000';
+        const API_ORIGIN = DEV_SPLIT ? `${window.location.protocol}//${hostname}:8001` : '';
+        const WS_ORIGIN = DEV_SPLIT
+            ? `ws://${hostname}:8001`
+            : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
+        // Send the session cookie on every request and bounce to the login page
+        // when it expires. Wrapping fetch once covers all call sites on the page.
+        (function () {
+            const nativeFetch = window.fetch.bind(window);
+            window.fetch = async function (input, init = {}) {
+                const response = await nativeFetch(input, { credentials: 'same-origin', ...init });
+                if (response.status === 401) {
+                    const nxt = btoa(window.location.pathname + window.location.search)
+                        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                    window.location.replace(`login.html?next=${nxt}`);
+                }
+                return response;
+            };
+        })();
+        const API_URL = API_ORIGIN;
+
+        // Sign-out control: hidden entirely when the deployment runs without auth.
+        (function () {
+            const signOutBtn = document.getElementById('signOutBtn');
+            if (!signOutBtn) return;
+            fetch(`${API_ORIGIN}/api/auth/me`)
+                .then((r) => (r.ok ? r.json() : null))
+                .then((data) => {
+                    if (!data || !data.auth_required) signOutBtn.style.display = 'none';
+                    else signOutBtn.title = `Signed in as ${data.username}`;
+                })
+                .catch(() => { signOutBtn.style.display = 'none'; });
+
+            signOutBtn.addEventListener('click', async () => {
+                await fetch(`${API_ORIGIN}/api/auth/logout`, { method: 'POST' }).catch(() => {});
+                window.location.replace('login.html');
+            });
+        })();
+        const WS_URL = WS_ORIGIN;
         const REFRESH_INTERVAL = 2000;
         const MODAL_REFRESH_INTERVAL = 500;
         const SEARCH_DEBOUNCE_MS = 300;
@@ -509,7 +556,8 @@
                 elements.refreshIndicator.classList.add('active');
 
                 try {
-                    const response = await fetch(`${API_URL}/api/feeds`);
+                    // Status only - the full catalogue is fetched once at load.
+                    const response = await fetch(`${API_URL}/api/feeds/status`);
                     const data = await response.json();
                     feedStatus = data.status;
                     feedVehicleDetected = data.vehicleDetected || {};

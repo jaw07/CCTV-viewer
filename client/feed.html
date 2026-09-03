@@ -488,7 +488,28 @@
     <script>
         // Configuration
         const hostname = window.location.hostname;
-        const API_BASE = `http://${hostname}:8001`;
+        // Same-origin when the backend serves the client (deployment shape);
+        // falls back to the dev backend port when opened from the :8000 server.
+        const DEV_SPLIT = window.location.port === '8000';
+        const API_ORIGIN = DEV_SPLIT ? `${window.location.protocol}//${hostname}:8001` : '';
+        const WS_ORIGIN = DEV_SPLIT
+            ? `ws://${hostname}:8001`
+            : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
+        // Send the session cookie on every request and bounce to the login page
+        // when it expires. Wrapping fetch once covers all call sites on the page.
+        (function () {
+            const nativeFetch = window.fetch.bind(window);
+            window.fetch = async function (input, init = {}) {
+                const response = await nativeFetch(input, { credentials: 'same-origin', ...init });
+                if (response.status === 401) {
+                    const nxt = btoa(window.location.pathname + window.location.search)
+                        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                    window.location.replace(`login.html?next=${nxt}`);
+                }
+                return response;
+            };
+        })();
+        const API_BASE = API_ORIGIN;
         let REFRESH_INTERVAL = 1000; // Default to 1 second for faster updates
 
         // State
