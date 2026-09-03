@@ -1020,10 +1020,13 @@ async def initialize_feeds():
                     # restart. Detection runs on them in the next cycle; this
                     # just gets a live picture up immediately.
                     for cam in batch:
+                        feed_id = f"CWA-{cam}"
+                        if app_state.get_cached_image(feed_id) is not None:
+                            continue  # detection already owns this frame
                         frame = yt_grabber.get_frame(cam)
                         if frame:
                             app_state.cache_image(
-                                f"CWA-{cam}", frame, is_working=True,
+                                feed_id, frame, is_working=True,
                                 has_vehicles=False,
                                 capture_time=yt_grabber.frame_time(cam),
                             )
@@ -1031,12 +1034,21 @@ async def initialize_feeds():
                             cached=sum(1 for c in cams if yt_grabber.get_frame(c)))
 
                 def _publish(g):
+                    # Only fill feeds that have no cached frame yet. The
+                    # detection cycle stores an ANNOTATED frame plus its
+                    # has_vehicles flag; overwriting that with a raw frame left
+                    # the "TAI OCCUPIED" badge on an image with no boxes drawn,
+                    # because the flag survived and the boxes did not. The badge
+                    # has to describe the image actually being shown.
                     for cam in list(g.resolved):
+                        feed_id = f"CWA-{cam}"
+                        if app_state.get_cached_image(feed_id) is not None:
+                            continue
                         frame = g.get_frame(cam)
                         if frame:
                             app_state.cache_image(
-                                f"CWA-{cam}", frame, is_working=True,
-                                has_vehicles=app_state.get_all_vehicle_detected().get(f"CWA-{cam}", False),
+                                feed_id, frame, is_working=True,
+                                has_vehicles=False,
                                 capture_time=g.frame_time(cam),
                             )
                 yt_grabber.on_frames = _publish

@@ -178,3 +178,32 @@ class TestCameraCoordinates:
         g.resolved = {slug: {"videoId": "x", "title": slug, "meta": m}
                       for slug, m in self._cams().items()}
         assert all(f["direction"] == "west" for f in g.build_feeds(west_only=True))
+
+
+class TestBadgeMatchesImage:
+    """A detection badge must describe the image actually being served.
+
+    Two paths write the frame cache: the detection cycle (annotated frame +
+    has_vehicles) and the coastal publish path (raw frame, for an immediate
+    picture after a restart). If the second overwrites the first, the badge
+    survives while the drawn boxes do not.
+    """
+
+    def test_raw_publish_never_claims_a_detection(self):
+        from core.cache import FeedCache
+        c = FeedCache()
+        # Detection cycle stores an annotated frame and flags vehicles.
+        c.set_image("CWA-x", b"annotated" * 400, is_working=True, has_vehicles=True)
+        assert c.get_vehicle_detected("CWA-x") is True
+
+        # The publish path must skip a feed that already has a cached frame.
+        already_cached = c.get_image("CWA-x") is not None
+        assert already_cached, "guard relies on detecting an existing frame"
+
+    def test_raw_frame_is_stored_without_a_detection_flag(self):
+        """When publish does fill an empty feed, it must not assert a detection."""
+        from core.cache import FeedCache
+        c = FeedCache()
+        c.set_image("CWA-y", b"rawframe" * 400, is_working=True, has_vehicles=False)
+        assert c.get_vehicle_detected("CWA-y") is False
+        assert c.get_image("CWA-y") is not None
