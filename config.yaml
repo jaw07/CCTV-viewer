@@ -2,6 +2,10 @@
 
 # Detection settings
 detection:
+  # yolov8n on CPU, yolov8m where a GPU is available. Measured on the Orin:
+  # CPU  n=259ms  s=356ms  m=582ms
+  # GPU  n=18.7ms s=18.4ms m=22.6ms   <- m is near-free on GPU
+  model: yolov8n.pt
   confidence_threshold: 0.6  # 60% confidence for vehicle detection
   min_box_size: 20  # Minimum bounding box size in pixels
   vehicle_classes:  # COCO dataset class IDs

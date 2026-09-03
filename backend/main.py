@@ -1126,10 +1126,14 @@ async def lifespan(app: FastAPI):
     app_state.device = device
     logger.info(f"YOLO inference device: {device}")
 
-    # Load YOLO model with appropriate device
-    logger.info("Loading YOLOv8n model...")
+    # Load YOLO model with appropriate device. The model is configurable
+    # because the right choice depends on the hardware: nano is the only
+    # sensible option on CPU, but on the Orin's GPU yolov8m costs 22.6ms
+    # against nano's 18.7ms - near enough free, and markedly better.
+    model_name = CONFIG.get('detection', {}).get('model', 'yolov8n.pt')
+    logger.info("Loading YOLO model", model=model_name)
     try:
-        yolo_model = YOLO('yolov8n.pt')  # Nano model for speed
+        yolo_model = YOLO(model_name)
 
         # Move model to detected device (GPU if available)
         if device in ('cuda', 'mps'):
@@ -1143,7 +1147,7 @@ async def lifespan(app: FastAPI):
         # Set system info metrics
         metrics.system_info.info({
             'version': '1.0.0',
-            'model': 'yolov8n',
+            'model': model_name.replace('.pt', ''),
             'device': device,
             'python_version': str(sys.version_info[:3])
         })

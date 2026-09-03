@@ -1,6 +1,11 @@
 services:
   cctv-viewer:
-    build: .
+    build:
+      context: .
+      # Dockerfile.jetson on the Orin (CUDA); the default builds anywhere.
+      dockerfile: ${CCTV_DOCKERFILE:-Dockerfile}
+    # The Jetson's docker default runtime is already nvidia, but be explicit.
+    runtime: ${CCTV_DOCKER_RUNTIME:-runc}
     # Single port: the backend serves the API and the static client from one
     # origin. Bound to localhost because cloudflared reaches it from the host.
     ports:

@@ -1,0 +1,51 @@
+# GPU build for NVIDIA Jetson (Orin, JetPack 6.x / L4T r36).
+#
+# The default Dockerfile installs CPU-only torch and runs anywhere, including
+# the x86 LattePanda. This one is Jetson-specific: it starts from NVIDIA's
+# JetPack-matched PyTorch image so CUDA actually works on the integrated GPU.
+#
+# Measured on the Orin, per 1280x720 frame:
+#   CPU (default image)  yolov8n 259ms   yolov8m 582ms
+#   GPU (this image)     yolov8n 18.7ms  yolov8m 22.6ms
+#
+# Build:  docker compose build      (with CCTV_DOCKERFILE=Dockerfile.jetson)
+FROM dustynv/l4t-pytorch:r36.4.0
+
+WORKDIR /app
+
+# Two traps in this base image, both of which fail in confusing ways:
+#  1. Its pip index does not carry ultralytics, so PyPI must be named directly.
+#  2. Its torch is built against NumPy 1.x. Installing NumPy 2 makes inference
+#     die with "RuntimeError: Numpy is not available", which reads like a
+#     missing package rather than a version conflict.
+ENV PIP_INDEX_URL=https://pypi.org/simple
+
+# This base ships python3 but no bare `python`; anything calling `python`
+# (entrypoints, tooling) would fail with a bare "command not found".
+RUN ln -sf /usr/bin/python3 /usr/local/bin/python
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg tesseract-ocr libgl1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir "numpy<2" && \
+    pip install --no-cache-dir yt-dlp
+
+# torch/torchvision come from the base image with CUDA support - installing the
+# pinned CPU wheels from requirements.txt would silently undo that.
+COPY requirements.txt .
+RUN grep -ivE '^(torch|torchvision|numpy)' requirements.txt > requirements-jetson.txt && \
+    pip install --no-cache-dir -r requirements-jetson.txt
+
+# Pre-fetch the weights so the first request does not block on a download.
+RUN python3 -c "from ultralytics import YOLO; YOLO('yolov8m.pt'); YOLO('yolov8n.pt')" || true
+
+COPY . .
+
+EXPOSE 8001
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]

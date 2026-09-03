@@ -5,7 +5,7 @@ set -e
 # mount in backend/main.py), so a single port is all that is exposed. Serving
 # from one origin is what lets the session cookie and the WebSocket work behind
 # a single HTTPS hostname.
-python backend/main.py &
+python3 backend/main.py &
 BACKEND_PID=$!
 
 cleanup() {
