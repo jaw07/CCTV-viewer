@@ -148,6 +148,18 @@ alert_manager = app_state.alert_manager
 
 # Detection settings from config
 VEHICLE_CLASSES = CONFIG.get('detection', {}).get('vehicle_classes', [2, 5, 7])
+# Coastal cameras look down on small, densely-packed vessels - a very different
+# problem from a car crossing a carriageway. Measured on a daylight Fugang
+# harbour frame with ~25-30 vessels visible (yolov8m, GPU):
+#   imgsz=640  conf=0.60 -> 0 boats (and a false "train")
+#   imgsz=1280 conf=0.35 -> 2 boats
+#   imgsz=1920 conf=0.25 -> 5 boats, plus false positives
+# so coastal feeds get their own, more sensitive settings while road detection
+# - which works well - is left exactly as it was.
+_COASTAL_CFG = CONFIG.get('detection', {}).get('coastal', {})
+COASTAL_CONFIDENCE = _COASTAL_CFG.get('confidence_threshold', 0.35)
+COASTAL_IMGSZ = _COASTAL_CFG.get('imgsz', 1280)
+ROAD_IMGSZ = CONFIG.get('detection', {}).get('imgsz', 640)
 # Coastal/harbour cameras see vessels, not cars. COCO class 8 is 'boat'.
 if CONFIG.get('detection', {}).get('detect_boats', False) and 8 not in VEHICLE_CLASSES:
     VEHICLE_CLASSES = list(VEHICLE_CLASSES) + [8]
@@ -615,7 +627,11 @@ def detect_vehicles(img_bytes: bytes, feed_id: str = None) -> tuple[bool, bytes,
             return False, img_bytes, {}
 
         # Run YOLO inference with confidence threshold
-        results = app_state.yolo_model(img_array, verbose=False, conf=CONFIDENCE_THRESHOLD)[0]
+        # Coastal feeds need a finer grid and a lower bar than road feeds.
+        is_coastal = bool(feed_id and feed_id.startswith('CWA-'))
+        conf = COASTAL_CONFIDENCE if is_coastal else CONFIDENCE_THRESHOLD
+        imgsz = COASTAL_IMGSZ if is_coastal else ROAD_IMGSZ
+        results = app_state.yolo_model(img_array, verbose=False, conf=conf, imgsz=imgsz)[0]
 
         has_vehicles = False
         valid_boxes = []
@@ -639,7 +655,7 @@ def detect_vehicles(img_bytes: bytes, feed_id: str = None) -> tuple[bool, bytes,
                     continue
 
                 # Check confidence threshold
-                if confidence < CONFIDENCE_THRESHOLD:
+                if confidence < conf:
                     filtered_detections["low_conf"] += 1
                     continue
 

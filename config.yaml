@@ -7,6 +7,20 @@ detection:
   # GPU  n=18.7ms s=18.4ms m=22.6ms   <- m is near-free on GPU
   model: yolov8n.pt
   confidence_threshold: 0.6  # 60% confidence for vehicle detection
+  imgsz: 640                 # inference size for road cameras
+
+  # Coastal cameras are a different problem: small, densely-packed vessels seen
+  # obliquely from above, rather than a car crossing a carriageway. Measured on
+  # a daylight Fugang harbour frame (~25-30 vessels visible, yolov8m on GPU):
+  #   imgsz=640  conf=0.60 -> 0 boats, plus a false "train"
+  #   imgsz=1280 conf=0.35 -> 2 boats   (49ms)
+  #   imgsz=1920 conf=0.25 -> 5 boats   (133ms), with false cars
+  # Even at best that is ~17% recall - COCO's boat class is trained on large,
+  # isolated, side-on boats, so treat the badge as "possible vessel activity"
+  # rather than a count. Road detection is untouched by these.
+  coastal:
+    confidence_threshold: 0.35
+    imgsz: 1280
   min_box_size: 20  # Minimum bounding box size in pixels
   vehicle_classes:  # COCO dataset class IDs
     - 2  # car
