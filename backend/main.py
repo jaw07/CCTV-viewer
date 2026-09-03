@@ -1008,11 +1008,38 @@ async def initialize_feeds():
                 cams = list(yt_grabber.resolved)
                 step = yt_grabber.max_concurrent
                 for i in range(0, len(cams), step):
+                    batch = cams[i:i + step]
                     await asyncio.gather(*(
                         loop.run_in_executor(None, yt_grabber.grab, c)
-                        for c in cams[i:i + step]
+                        for c in batch
                     ), return_exceptions=True)
-                logger.info("coastal cameras ready", cameras=len(cams))
+                    # Publish each frame as soon as it lands. The cache worker
+                    # only picks up new feeds on its next cycle, and a full pass
+                    # over ~2400 feeds takes minutes - so without this the
+                    # coastal cameras stay dark for a whole cycle after a
+                    # restart. Detection runs on them in the next cycle; this
+                    # just gets a live picture up immediately.
+                    for cam in batch:
+                        frame = yt_grabber.get_frame(cam)
+                        if frame:
+                            app_state.cache_image(
+                                f"CWA-{cam}", frame, is_working=True,
+                                has_vehicles=False,
+                                capture_time=yt_grabber.frame_time(cam),
+                            )
+                logger.info("coastal cameras ready", cameras=len(cams),
+                            cached=sum(1 for c in cams if yt_grabber.get_frame(c)))
+
+                def _publish(g):
+                    for cam in list(g.resolved):
+                        frame = g.get_frame(cam)
+                        if frame:
+                            app_state.cache_image(
+                                f"CWA-{cam}", frame, is_working=True,
+                                has_vehicles=app_state.get_all_vehicle_detected().get(f"CWA-{cam}", False),
+                                capture_time=g.frame_time(cam),
+                            )
+                yt_grabber.on_frames = _publish
                 asyncio.create_task(yt_grabber.run())
             except Exception as exc:
                 logger.error("coastal bring-up failed", error=str(exc))

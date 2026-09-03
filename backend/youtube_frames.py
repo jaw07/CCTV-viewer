@@ -71,6 +71,9 @@ class YouTubeFrameGrabber:
         # Each grab spawns yt-dlp and ffmpeg. With ~100 cameras, firing them all
         # at once would swamp the host, so grabs run in bounded batches.
         self.max_concurrent = max(1, max_concurrent)
+        # Optional hook fired after each grab pass, so the caller can publish
+        # frames without waiting for its own polling cycle.
+        self.on_frames = None
         self.logger = logger
 
         # camera_id -> {"videoId", "title", "meta"}
@@ -284,6 +287,11 @@ class YouTubeFrameGrabber:
                             failed.append(cam)
                 self._log("info", "coastal frames grabbed",
                           ok=ok, total=len(cams), failed=len(failed))
+                if self.on_frames:
+                    try:
+                        self.on_frames(self)
+                    except Exception as exc:
+                        self._log("error", "frame callback failed", error=str(exc))
                 if failed:
                     self._log("debug", "frame grabs failed", cameras=failed[:10])
 
