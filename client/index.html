@@ -758,12 +758,16 @@
             if (!currentModalFeedId) return;
 
             if (feedStatus[currentModalFeedId]) {
+                // Reuse the existing <img> only when it already points at THIS
+                // feed. Refreshing whatever src happened to be there kept the
+                // modal showing the previously opened camera forever.
+                const path = `/api/feeds/${encodeURIComponent(currentModalFeedId)}/snapshot`;
+                const wanted = `${API_URL}${path}`;
                 const existingImg = elements.modalVideo.querySelector('img');
-                if (existingImg) {
-                    const baseSrc = existingImg.src.split('?')[0];
-                    existingImg.src = `${baseSrc}?t=${Date.now()}`;
+                if (existingImg && existingImg.src.split('?')[0].endsWith(path)) {
+                    existingImg.src = `${wanted}?t=${Date.now()}`;
                 } else {
-                    elements.modalVideo.innerHTML = `<img src="${API_URL}/api/feeds/${currentModalFeedId}/snapshot?t=${Date.now()}" crossorigin="anonymous" alt="Feed preview">`;
+                    elements.modalVideo.innerHTML = `<img src="${wanted}?t=${Date.now()}" crossorigin="anonymous" alt="Feed preview">`;
                 }
             } else {
                 elements.modalVideo.innerHTML = ImageLoader.createOfflinePlaceholder();
